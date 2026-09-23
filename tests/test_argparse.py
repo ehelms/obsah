@@ -58,6 +58,45 @@ class TestRemoveAction:
 
         assert args.exclude == ['foo', 'bar']
 
+    def test_remove_records_unique_operands(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            '--remove-option',
+            action=RemoveAction,
+            dest='options',
+            record_dest='remove_options',
+            default=['foo', 'bar'],
+        )
+
+        args = parser.parse_args([
+            '--remove-option', 'bar',
+            '--remove-option', 'bar',
+            '--remove-option', 'foo',
+        ])
+
+        assert args.options == []
+        assert args.remove_options == ['bar', 'foo']
+
+    def test_remove_and_append_apply_in_cli_order(self):
+        parser = ObsahArgumentParser()
+        parser.add_argument('--add-option', action='append_unique', dest='options', default=[])
+        parser.add_argument(
+            '--remove-option',
+            action='remove',
+            dest='options',
+            record_dest='remove_options',
+            default=[],
+        )
+
+        args = parser.parse_args([
+            '--add-option', 'foo',
+            '--remove-option', 'foo',
+            '--add-option', 'foo',
+        ])
+
+        assert args.options == ['foo']
+        assert args.remove_options == ['foo']
+
 
 class TestActionStringNames:
     """Test that custom actions can be used via string names"""

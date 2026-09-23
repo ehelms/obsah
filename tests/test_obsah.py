@@ -121,6 +121,25 @@ def test_generate_ansible_args(playbooks_path, parser, cliargs, expected):
     assert ansible_args == base_expected + expected
 
 
+def test_remove_destination_exposes_raw_operands(playbooks_path, parser):
+    args = parser.parse_args([
+        'dummy', 'testpackage',
+        '--add-feature', 'foo',
+        '--remove-feature', 'foo',
+        '--remove-feature', 'bar',
+        '--add-feature', 'bar',
+    ])
+
+    assert args.features == ['bar']
+    assert args.remove_features == ['foo', 'bar']
+
+    ansible_args = obsah.generate_ansible_args('inventory.yml', args, parser.obsah_arguments)
+    assert ansible_args[-2:] == [
+        '-e',
+        '{"features": ["bar"], "obsah_state_path": "/var/lib/obsah", "remove_features": ["foo", "bar"]}',
+    ]
+
+
 @pytest.mark.parametrize("base,other,expected", [
     ({}, {}, {}),
     ({'required_if': [['a', 1, ['b']]]}, {}, {'required_if': [['a', 1, ['b']]]}),

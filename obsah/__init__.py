@@ -64,10 +64,15 @@ class RemoveAction(argparse.Action):
     """
     Custom argparse action that removes values from a list.
     Useful when you have a default list and want to selectively remove items.
+
+    ``record_dest`` is used when a parameter has a different argparse ``dest``.
+    It records the raw operands under the source variable name so the playbook
+    can validate the requested removals without persisting them.
     """
-    def __init__(self, option_strings, dest, default=None, **kwargs):
+    def __init__(self, option_strings, dest, default=None, record_dest=None, **kwargs):
         if default is None:
             default = []
+        self.record_dest = record_dest
         super().__init__(option_strings, dest, default=default, **kwargs)
 
     def __call__(self, parser, namespace, values, option_string=None):
@@ -81,6 +86,12 @@ class RemoveAction(argparse.Action):
             if values in items:
                 items.remove(values)
         setattr(namespace, self.dest, items)
+
+        if self.record_dest is not None:
+            recorded = list(getattr(namespace, self.record_dest, None) or [])
+            if values not in recorded:
+                recorded.append(values)
+            setattr(namespace, self.record_dest, recorded)
 
 
 def _merge_constraints(base, other):
@@ -387,6 +398,14 @@ class ObsahArgumentParser(argparse.ArgumentParser):
         return super().format_help()
 
 
+def _load_persisted_params(path):
+    """Load persisted parameters, returning an empty mapping when absent."""
+    with contextlib.suppress(FileNotFoundError):
+        with open(path) as persist_file:
+            return yaml.safe_load(persist_file) or {}
+    return {}
+
+
 def find_targets(inventory_path) -> Optional[Iterable]:
     """
     Find all targets in the given inventory
@@ -461,11 +480,21 @@ def obsah_argument_parser(application_config=ApplicationConfig, playbooks=None, 
         subparser.set_defaults(playbook=playbook)
         if application_config.persist_params():
             subparser.epilog = "Parameters marked as (persisted) can be reset by --reset-<parameter-name>."
-            with contextlib.suppress(FileNotFoundError):
-                with open(application_config.persist_path()) as persist_file:
-                    persist_params = yaml.safe_load(persist_file)
-                if persist_params:
-                    subparser.set_defaults(**persist_params)
+            persist_params = _load_persisted_params(application_config.persist_path())
+            non_persistent = {variable.name for variable in playbook.playbook_variables if not variable.persist}
+            stale_non_persistent = sorted(non_persistent.intersection(persist_params))
+            if stale_non_persistent:
+                print(
+                    "Warning: ignoring non-persistent parameter(s) loaded from state: {}; "
+                    "they will be removed after a successful command.".format(
+                        ', '.join(stale_non_persistent)
+                    ),
+                    file=sys.stderr,
+                )
+            for variable_name in non_persistent:
+                persist_params.pop(variable_name, None)
+            if persist_params:
+                subparser.set_defaults(**persist_params)
 
         if playbook.takes_target_parameter:
             subparser.add_argument('target',
@@ -484,6 +513,8 @@ def obsah_argument_parser(application_config=ApplicationConfig, playbooks=None, 
                 argument_args['choices'] = variable.choices
             if variable.parameter.startswith('--'):
                 argument_args['dest'] = variable.dest or variable.name
+                if variable.action == 'remove' and variable.dest and variable.dest != variable.name:
+                    argument_args['record_dest'] = variable.name
 
             if application_config.persist_params() and variable.parameter.startswith('--') and variable.persist:
                 base_help = argument_args.get('help') or ''
@@ -540,33 +571,27 @@ def generate_ansible_args(inventory_path, args, obsah_arguments):
 
 
 def reset_args(application_config: ApplicationConfig, metadata: dict, args: argparse.Namespace):
-    with contextlib.suppress(FileNotFoundError):
-        with open(application_config.persist_path()) as persist_file:
-            persist_params = yaml.safe_load(persist_file)
-        if persist_params:
-            for (reset_key, reset_values) in metadata['reset']:
-                if reset_key in persist_params and persist_params.get(reset_key) != getattr(args, reset_key):
-                    for arg in reset_values:
-                        if arg in persist_params and persist_params[arg] == getattr(args, arg):
-                            delattr(args, arg)
-            for reset_arg in (getattr(args, 'obsah_reset', None) or []):
-                with contextlib.suppress(AttributeError):
-                    delattr(args, reset_arg)
+    persist_params = _load_persisted_params(application_config.persist_path())
+    if persist_params:
+        for (reset_key, reset_values) in metadata['reset']:
+            if reset_key in persist_params and persist_params.get(reset_key) != getattr(args, reset_key):
+                for arg in reset_values:
+                    if arg in persist_params and persist_params[arg] == getattr(args, arg):
+                        delattr(args, arg)
+        for reset_arg in (getattr(args, 'obsah_reset', None) or []):
+            with contextlib.suppress(AttributeError):
+                delattr(args, reset_arg)
     return args
 
 
 def persist_args(application_config, args, dont_persist):
-    persist_dir = os.path.dirname(application_config.persist_path())
+    persist_path = application_config.persist_path()
+    persist_dir = os.path.dirname(persist_path)
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir, mode=0o770, exist_ok=True)
 
-    try:
-        with open(application_config.persist_path()) as persist_file:
-            persist_params = yaml.safe_load(persist_file)
-    except FileNotFoundError:
-        persist_params = {}
-
-    with open(application_config.persist_path(), 'w') as persist_file:
+    persist_params = _load_persisted_params(persist_path)
+    with open(persist_path, 'w') as persist_file:
         persist_params.update(dict(vars(args)))
         for item in dont_persist:
             persist_params.pop(item, None)

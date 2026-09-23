@@ -25,3 +25,13 @@ variables:
     parameter: --my-list
     action: append
     help: Repeatable action
+  features:
+    parameter: --add-feature
+    action: append_unique
+    help: Add a feature
+  remove_features:
+    parameter: --remove-feature
+    action: remove
+    dest: features
+    persist: false
+    help: Remove a feature
